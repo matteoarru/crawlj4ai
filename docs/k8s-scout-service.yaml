@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: crawlj4ai-state-pvc
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crawlj4ai-scout
+  labels:
+    app: crawlj4ai-scout
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crawlj4ai-scout
+  template:
+    metadata:
+      labels:
+        app: crawlj4ai-scout
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: scout
+          image: crawlj4ai-service:0.1.0
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: CRAWLJ4AI_DATA_DIR
+              value: /data/.crawlj4ai
+            - name: CRAWLJ4AI_MAX_CONCURRENCY
+              value: "4"
+            - name: LLM_PROFILE
+              value: gemma4-local
+            - name: OLLAMA_BASE_URL
+              value: http://ollama-service:11434
+            - name: BRAVE_API
+              valueFrom:
+                secretKeyRef:
+                  name: crawlj4ai-secrets
+                  key: brave-api-key
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: crawlj4ai-secrets
+                  key: openai-api-key
+                  optional: true
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "4"
+              memory: 6Gi
+          volumeMounts:
+            - name: state-storage
+              mountPath: /data
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: state-storage
+          persistentVolumeClaim:
+            claimName: crawlj4ai-state-pvc
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: crawlj4ai-scout
+spec:
+  type: ClusterIP
+  selector:
+    app: crawlj4ai-scout
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080

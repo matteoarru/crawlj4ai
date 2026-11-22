@@ -1,0 +1,466 @@
+openapi: 3.1.0
+info:
+  title: crawlJ4ai Scout Service API
+  version: 0.1.0
+  description: >
+    Autonomous web discovery, headless Playwright crawling, self-healing CSS extraction,
+    semantic diff filtering, and adaptive Poisson monitoring service with parametric LLM routing.
+
+servers:
+  - url: http://localhost:8080
+    description: Local or Docker Compose Scout instance
+
+tags:
+  - name: Extraction & Crawling
+    description: Synchronous on-demand page rendering, fitMarkdown conversion, and self-healing extraction
+  - name: Search Monitors
+    description: Periodic Brave Search discovery monitors that auto-register new URLs
+  - name: Schedules & Alerts
+    description: Adaptive polling schedules and real-time Server-Sent Events (SSE) alerts
+  - name: LLM Routing
+    description: Parametric LLM profiles (Gemma 4, Qwen, OpenAI) and local-to-cloud failover telemetry
+
+paths:
+  /api/v1/scout/crawl:
+    post:
+      tags: [Extraction & Crawling]
+      operationId: crawlUrl
+      summary: Synchronously crawl a URL with HTTP 304 pre-filtering, semantic diffing, and optional extraction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CrawlRequest'
+      responses:
+        '200':
+          description: Crawl succeeded (or skipped Chromium via HTTP 304 Not Modified)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CrawlResponse'
+        '400':
+          description: Invalid URL, unknown llmProfile, or malformed extraction specification
+        '502':
+          description: Target origin failed to load or timed out
+
+  /api/v1/scout/extract:
+    post:
+      tags: [Extraction & Crawling]
+      operationId: extractFromUrl
+      summary: Extract structured JSON using self-healing CSS selectors or schema-guided LLM extraction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExtractRequest'
+      responses:
+        '200':
+          description: Structured records extracted and active CSS selector schema returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtractResponse'
+        '400':
+          description: Invalid request parameters or disabled LLM profile
+        '502':
+          description: Extraction or upstream page load failed
+
+  /api/v1/scout/monitors:
+    post:
+      tags: [Search Monitors]
+      operationId: registerSearchMonitor
+      summary: Register a periodic BraveSearchQuery discovery monitor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterSearchMonitorRequest'
+      responses:
+        '201':
+          description: Search monitor created and scheduled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchMonitorState'
+        '400':
+          description: BraveSearchClient not configured or unknown llmProfile
+
+  /api/v1/scout/monitors/{monitorId}/trigger:
+    post:
+      tags: [Search Monitors]
+      operationId: triggerSearchNow
+      summary: Force immediate execution of a registered BraveSearchQuery monitor
+      parameters:
+        - name: monitorId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Discovery search dispatched asynchronously
+        '404':
+          description: Unknown monitorId
+
+  /api/v1/scout/monitors/{monitorId}:
+    delete:
+      tags: [Search Monitors]
+      operationId: unregisterSearchMonitor
+      summary: Remove a search monitor and optionally unregister its discovered URLs
+      parameters:
+        - name: monitorId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: deleteUrls
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '204':
+          description: Search monitor removed
+
+  /api/v1/scout/monitors/{monitorId}/urls:
+    get:
+      tags: [Search Monitors]
+      operationId: listDiscoveredUrlsForMonitor
+      summary: List all URLs discovered by a specific search monitor with their adaptive schedule states
+      parameters:
+        - name: monitorId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of discovered URLs and schedules
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DiscoveredUrlView'
+        '404':
+          description: Unknown monitorId
+
+  /api/v1/scout/urls:
+    get:
+      tags: [Search Monitors]
+      operationId: listAllDiscoveredUrls
+      summary: List all discovered URLs across every active search monitor
+      responses:
+        '200':
+          description: Aggregated list of discovered URLs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DiscoveredUrlView'
+
+  /api/v1/scout/schedules:
+    get:
+      tags: [Schedules & Alerts]
+      operationId: inspectAllSchedules
+      summary: Inspect all active search discovery schedules and per-URL adaptive crawl schedules
+      responses:
+        '200':
+          description: Complete schedule overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleOverviewResponse'
+
+  /api/v1/scout/schedules/url:
+    get:
+      tags: [Schedules & Alerts]
+      operationId: inspectUrlSchedule
+      summary: Inspect adaptive polling metrics for a single monitored URL
+      parameters:
+        - name: url
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uri
+      responses:
+        '200':
+          description: Current URL schedule state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UrlScheduleState'
+        '404':
+          description: URL is not scheduled
+
+  /api/v1/scout/schedules/url/trigger:
+    post:
+      tags: [Schedules & Alerts]
+      operationId: triggerUrlCrawlNow
+      summary: Force an immediate re-crawl and semantic diff check for a scheduled URL
+      parameters:
+        - name: url
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uri
+      responses:
+        '202':
+          description: Crawl triggered
+        '404':
+          description: URL is not registered
+
+  /api/v1/scout/alerts/stream:
+    get:
+      tags: [Schedules & Alerts]
+      operationId: streamAlerts
+      summary: Subscribe to real-time discovery and substantive content-update alerts over Server-Sent Events (SSE)
+      parameters:
+        - name: replay
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Infinite text/event-stream emitting discovery and content-update events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /api/v1/scout/alerts/recent:
+    get:
+      tags: [Schedules & Alerts]
+      operationId: getRecentAlerts
+      summary: Retrieve up to 100 most recent discovery and content-update alerts
+      responses:
+        '200':
+          description: Recent alert events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ScoutAlertEvent'
+
+  /api/v1/scout/llm/profiles:
+    get:
+      tags: [LLM Routing]
+      operationId: listLlmProfiles
+      summary: List all configured LLM profiles and their fallback chains
+      responses:
+        '200':
+          description: Map of profile name to sanitized configuration
+
+  /api/v1/scout/llm/profiles/{profileName}:
+    post:
+      tags: [LLM Routing]
+      operationId: registerLlmProfile
+      summary: Dynamically register or update a named LLM profile at runtime
+      parameters:
+        - name: profileName
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LlmProfileConfig'
+      responses:
+        '201':
+          description: Profile registered and active
+
+  /api/v1/scout/llm/failovers:
+    get:
+      tags: [LLM Routing]
+      operationId: inspectLlmFailovers
+      summary: Inspect primary vs. backup success counters and recent failover events
+      responses:
+        '200':
+          description: Failover telemetry keyed by root profile name
+
+components:
+  schemas:
+    ExtractionSpecRequest:
+      type: object
+      properties:
+        schemaName: { type: string }
+        baseSelector: { type: string }
+        fieldSelectors: { type: object, additionalProperties: { type: string } }
+        fieldDescriptions: { type: object, additionalProperties: { type: string } }
+        requiredFields: { type: array, items: { type: string } }
+        minExpectedItems: { type: integer, minimum: 1, default: 1 }
+        selfHealing: { type: boolean, default: true }
+        llmInstruction: { type: string }
+        jsonSchemaExample: { type: string }
+    CrawlRequest:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, format: uri }
+        wordCountThreshold: { type: integer, minimum: 0, default: 5 }
+        excludedTags: { type: array, items: { type: string } }
+        cssScopeSelector: { type: string, default: body }
+        waitForSelector: { type: string }
+        bypassCache: { type: boolean }
+        llmProfile: { type: string }
+        monitoringFocus: { type: string }
+        includeHtml: { type: boolean, default: false }
+        extraction: { $ref: '#/components/schemas/ExtractionSpecRequest' }
+    CrawlResponse:
+      type: object
+      properties:
+        url: { type: string }
+        success: { type: boolean }
+        statusCode: { type: integer }
+        skippedBrowserViaHttp304: { type: boolean }
+        changedFromPrevious: { type: boolean }
+        llmProfileUsed: { type: string }
+        fitMarkdown: { type: string, nullable: true }
+        rawMarkdown: { type: string, nullable: true }
+        cleanedHtml: { type: string, nullable: true }
+        extractedData: { nullable: true }
+        extractedJson: { type: string, nullable: true }
+        internalLinks: { type: array, items: { type: string } }
+        externalLinks: { type: array, items: { type: string } }
+        semanticDiff: { $ref: '#/components/schemas/SemanticDiffResult' }
+        errorMessage: { type: string, nullable: true }
+    ExtractRequest:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, format: uri }
+        schemaName: { type: string }
+        baseSelector: { type: string }
+        fieldSelectors: { type: object, additionalProperties: { type: string } }
+        fieldDescriptions: { type: object, additionalProperties: { type: string } }
+        requiredFields: { type: array, items: { type: string } }
+        minExpectedItems: { type: integer, minimum: 1 }
+        selfHealing: { type: boolean, default: true }
+        llmInstruction: { type: string }
+        jsonSchemaExample: { type: string }
+        llmProfile: { type: string }
+        cssScopeSelector: { type: string }
+        waitForSelector: { type: string }
+    ExtractResponse:
+      type: object
+      properties:
+        url: { type: string }
+        success: { type: boolean }
+        statusCode: { type: integer }
+        schemaName: { type: string }
+        selfHealingEnabled: { type: boolean }
+        llmProfileUsed: { type: string }
+        activeSelectorSchema: { $ref: '#/components/schemas/CssSelectorSchema' }
+        extractedData: { nullable: true }
+        extractedJson: { type: string, nullable: true }
+        errorMessage: { type: string, nullable: true }
+    CssSelectorSchema:
+      type: object
+      nullable: true
+      properties:
+        baseSelector: { type: string }
+        fieldSelectors: { type: object, additionalProperties: { type: string } }
+    SemanticDiffResult:
+      type: object
+      nullable: true
+      properties:
+        substantive: { type: boolean }
+        category:
+          type: string
+          enum: [INITIAL_CAPTURE, NO_CHANGE, COSMETIC_OR_NOISE, CONTENT_ADDED, CONTENT_MODIFIED, CONTENT_REMOVED, PRICING_OR_POLICY_UPDATE]
+        significanceScore: { type: number, format: double }
+        summary: { type: string }
+        keyChanges: { type: array, items: { type: string } }
+    RegisterSearchMonitorRequest:
+      type: object
+      required: [monitorId, query]
+      properties:
+        monitorId: { type: string }
+        query: { type: string }
+        count: { type: integer, minimum: 1, maximum: 20, default: 10 }
+        freshness: { type: string, enum: [PAST_DAY, PAST_WEEK, PAST_MONTH, PAST_YEAR] }
+        country: { type: string }
+        maxTrackedUrls: { type: integer, minimum: 1, maximum: 500, default: 100 }
+        excludeDomains: { type: array, items: { type: string } }
+        volatileTarget: { type: boolean, default: false }
+        triggerImmediately: { type: boolean, default: false }
+        llmProfile: { type: string }
+        monitoringFocus: { type: string }
+    SearchMonitorState:
+      type: object
+      properties:
+        monitorId: { type: string }
+        queryText: { type: string }
+        llmProfile: { type: string }
+        nextSearchAtEpochMs: { type: integer, format: int64 }
+        lastSearchedAtEpochMs: { type: integer, format: int64 }
+        currentIntervalMs: { type: integer, format: int64 }
+        estimatedDiscoveriesPerHour: { type: number, format: double }
+        totalSearches: { type: integer, format: int64 }
+        totalUrlsDiscovered: { type: integer, format: int64 }
+        knownUrls: { type: array, items: { type: string } }
+    UrlScheduleState:
+      type: object
+      nullable: true
+      properties:
+        url: { type: string }
+        nextCrawlAtEpochMs: { type: integer, format: int64 }
+        lastCrawledAtEpochMs: { type: integer, format: int64 }
+        currentIntervalMs: { type: integer, format: int64 }
+        estimatedChangesPerHour: { type: number, format: double }
+        emaSubstantiveScore: { type: number, format: double }
+        totalChecks: { type: integer, format: int64 }
+        substantiveHits: { type: integer, format: int64 }
+        consecutiveNonSubstantive: { type: integer }
+        lastCategory: { type: string, nullable: true }
+    DiscoveredUrlView:
+      type: object
+      properties:
+        monitorId: { type: string }
+        url: { type: string }
+        scheduleState: { $ref: '#/components/schemas/UrlScheduleState' }
+    ScheduleOverviewResponse:
+      type: object
+      properties:
+        searchMonitors: { type: array, items: { $ref: '#/components/schemas/SearchMonitorState' } }
+        monitoredUrls: { type: array, items: { $ref: '#/components/schemas/UrlScheduleState' } }
+    ScoutAlertEvent:
+      type: object
+      properties:
+        eventId: { type: string }
+        type: { type: string, enum: [NEW_URL_DISCOVERED, CONTENT_UPDATED] }
+        monitorId: { type: string, nullable: true }
+        url: { type: string }
+        title: { type: string, nullable: true }
+        summary: { type: string }
+        category: { type: string }
+        significanceScore: { type: number, format: double }
+        keyChanges: { type: array, items: { type: string } }
+        timestampEpochMs: { type: integer, format: int64 }
+    LlmProfileConfig:
+      type: object
+      required: [provider]
+      properties:
+        provider: { type: string, enum: [NONE, OLLAMA, OPENAI, OPENAI_COMPATIBLE] }
+        baseUrl: { type: string, nullable: true }
+        apiKey: { type: string, nullable: true }
+        modelName: { type: string, nullable: true }
+        temperature: { type: number, default: 0.0 }
+        numCtx: { type: integer, nullable: true }
+        timeout: { type: string, example: PT60S }
+        strictJsonSchema: { type: boolean, default: false }
+        stripThinkingBlocks: { type: boolean, default: true }
+        fallbackProfiles: { type: array, items: { type: string } }
